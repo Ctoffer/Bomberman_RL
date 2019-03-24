@@ -1,0 +1,85 @@
+Seite 15:
+
+The agent has information about the 4 fields around him (up, down, left and right) and he saves a flag
+coding if the action „drop bomb“ is available. Additional necessary information is given as
+„distance to nearest opponent on the field“, „distance to nearest bomb on the field“ and „distance nearest coin on the field“. 
+All of these are calculated with the  taxicab distance d_1(a, b) = ||a - b||_1 = sum(i=1, n, |a_i - b_i|).
+To achieve being faster all information about crates, fields, walls and
+coins were merged and represented in one matrix called 'combined view' from which the information of the fields around the agent is
+extracted. So we can estimate the number of states for this agent as follows:
+
+New Agent und so
+
+Since the state space is to large for a simple mapping via Q-table and the manual reduction (see agent 1) showed to be
+extremely inefficient we decided to take a more powerful computational approach of feature learning. Because we have to
+deal with highly structured data a neuronal network is an good choice to find suitable features. To make the most use of
+all the components needed for the network, we decided to create a small easy configurable framework with an easy interface
+to the given framework.
+The components of the framework can be devided into four categories: Perception, Memory, Network and Statistics.
+For a better structure each of these components are controlled by the AgentProxy, which contains the basic execution logic
+(see figure <#1>).
+As seen in figure <#2> the perception consists of a preprocessing, extracting the six core features from the environment as
+arena, me, others, coins, bomb_xys and bomb_map. Where arena and bomb_map are 17x17 matrices, me a four tuple containing
+the coordinates a flag, if the agent can use a bomb and his score. Furthermore coins and bomb_xys are lists containing the
+coordinates of coins and respectively bombs. This information is the raw environment so it needs to be processed by a sensor.
+As shown by Deep Mind it is usefull to take multiple frames as one gamestate, so we created one 17x17
+matrix containing all information of a game state, to create a 5x17x17 tensor for each gamestate, where the 5th entry is the
+current frame and every frame before is a past frame.
+For the first frame there is the special rule, that the tensor consists of 5 times the same frame and for each next frame
+the first will be removed and a new last frame gets appended. So the agent can see a whole bomb lifecycle and can learn
+to perform the corresponding actions. Each frame consists of a pseudo-grayscale image of the map, encoding walls, free
+fields, coins, crates, enemies, bombs, bomb explosions and of course the agent. The bomb explosions have different level
+of brightness corresponding to their timer. An other special encoding is used to signal 'agent directly on bomb'.
+One stack frame is used during evaluation to get the action with the biggest estimated reward Q.
+
+As exploration policy we used a epsilon greedy policy with an initial epsilon of 0.9 and a final epsilon of 0.01
+During training the current step is remembered in a replay memory for which we tried a simple FiFo based one, which
+does prioritize every memory equal and a Priorized Expierence Replay (PER) [0] implemented with a sum tree. One
+step consists of the current perception of the environment, the action the agent choose, the immediate reward the agent
+received, the next perception of the environment and a flag if this step was the last in the game episode.
+From this replay memory a minibatch of 64 gamesteps is sampled and evaluated by the network. To train the network we
+used mean squared error to calculate the loss between the current Q-value and the possible future reward. As optimizer we
+used a specialized stochastic gradient descent method - Adam. After the optimization of the network weights the priorities
+in the memory gets updated. In the paper [0] of PER it is recommended to unbias the weight update during training to
+get better results, in our case the agent performed quite good without this update, so we decided to omit it.
+As recommended by [3] we used as initial error the reward of the step - the error is necessary to calculate the priority
+p = (error + eta)^alpha, we chose eta=0.01 and alpha=0.6. To calculate the reward of a step we simply sum up the mapped
+values of the events.
+
+As core neuronal net architecture we used a three layer convolutional network followed by a two fully connected layers.
+This basic setup allows the network to learn 2-dimensional features in the image space and then vector features.  The output
+of the network is a 6-dimensional vector, which represents Q-values for each action - the action with the biggest value
+is then the chosen one. This basic setup worked really well for an empty field with coins and only our agent, but we tried
+more complex solution, which in theory should improve the speed of convergence.
+The first approach we tried is double Q-Learning [1], which uses two networks instead of one during training. The first
+network calculates which action the agent should perform next and the second network, the target network computes the
+Q-value of this action and determines how good this action will be. After a fixed interval of updates on the first network
+the weights of the first network will be copied in the target network.
+An other improvement we tried is the Dueling Network [2] approach, where the first part of the network is the basic convolutional
+network, but then uses one set of fully conntected layers to calculate the value of being at a state s and a second one
+to calculate the advantage of taking the action of that state. By decoupling the the estimation the net can learn how
+valuable it is to be in a state without having to learn, whats the effect of an specific action is. So it can also learn
+that it might not matter, which action should be performed. This approach also did not work for us very well.
+The next approach we took was a combination of the two augmentations a Dueling Double Q-Net, which did not improve the results
+either.
+
+In the end we sticked to very simple convoltional network and a simple replay memory, which reached after 30000 training
+games an average score of 8.868 coins per game. The first 10000 iterations were trained with epsilon linearly decreasing
+from 0.9 to 0.1 in 4000 iterations, then from 0.1 to 0.01 in 4000 iterations and from 0.01 to 0.001 in 2000 iterations.
+We did this twice and the rest with 0.01. We used the double usage of high epsilons to get stronger exploration, after the agent initial got a basic feeling
+for its environment and found some good actions. This approach worked very well for the simplest scenario, where the agent
+just tries to collect all coins. The agent was tested with PyTorch 0.4.0 and CUDA 9.1.85.
+The same setup didn't perform well for a stage with crates and coins and was not tested against other agents, so it maybe
+was a lucky shot an we got a good optimization minimum. So in the end our agent can only collect coins on an empty field.
+
+As main problem we identified the missing knowledge, on one hand the deep understanding on why and when the agent would
+learn something usefull and on the other hand the debugging of the code. Sometimes the framework would not crash even
+if the code partially failed with in error. The most annoying part of the project was the time consuming training, the agent
+needs at least 10000 games (more is better) to get representative results for the configuration. Because of the many
+adjustable hyperparameters we felt a bit lost with all the possible configurations.
+
+Sources
+[0] Prio Experience Replay https://arxiv.org/abs/1511.05952
+[1] Double Q-Learning https://arxiv.org/abs/1509.06461
+[2] Dueling Network https://arxiv.org/abs/1511.06581
+[3] https://jaromiru.com/2016/11/07/lets-make-a-dqn-double-learning-and-prioritized-experience-replay/#fn:4
